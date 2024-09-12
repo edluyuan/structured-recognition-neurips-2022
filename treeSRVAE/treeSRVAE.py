@@ -19,7 +19,13 @@ from distributions import bernoulli
 from factorgraph import Graph
 from factorgraph_numpy import Graph_numpy
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+device = (
+    torch.device('cuda')
+    if torch.cuda.is_available()
+    else torch.device('mps')
+    if torch.backends.mps.is_available()
+    else torch.device('cpu')
+)
 
 class binTreeSRVAE(nn.Module):
     def __init__(self, input_dim, latent_dim, hidden_dims, prior_w=None, recognition_MF=True, latent_pgm='MF'):

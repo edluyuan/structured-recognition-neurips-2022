@@ -181,7 +181,7 @@ def make_pinwheel_data(radial_std, tangential_std, num_classes, num_per_class, r
     
     feats = 10 * np.einsum('ti,tij->tj', features, rotations)
     data = np.random.permutation(np.hstack([feats, labels[:, None]]))
-    return data[:, :2], data[:, 2].astype(np.int)
+    return data[:, :2], data[:, 2].astype(int)
 
 def perturb_pinwheel(x, noise_ratio=0.1, noise_mean=0.0, noise_std=10, seed=0):
     np.random.seed(seed)

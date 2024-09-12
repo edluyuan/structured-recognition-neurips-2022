@@ -23,7 +23,13 @@ from helpers.model_utils import init_mm, cvi_lr_schedule
 from helpers.data import make_dataloader
 from helpers.losses import weighted_mse
 
-DEVICE = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+DEVICE = (
+    torch.device('cuda')
+    if torch.cuda.is_available()
+    else torch.device('mps')
+    if torch.backends.mps.is_available()
+    else torch.device('cpu')
+)
 
 # torch.autograd.set_detect_anomaly(True) # comment this line out after debugging
 

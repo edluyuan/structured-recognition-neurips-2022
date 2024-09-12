@@ -17,6 +17,8 @@ def load(session_id, test_ratio=0.05, num_points=6000, binsize=0.1, normalise=Tr
     behavioral_df = behavioral_df.iloc[:num_data]
     all_sc = all_sc[:num_data]
     all_ft = all_ft[:num_data]
+    all_ft_new = []
+    max_length = 0
     num_test = int(num_data * test_ratio)
     test_ind_start = np.random.choice(num_data-num_test)
     test_inds = np.arange(test_ind_start, test_ind_start+num_test)
@@ -30,12 +32,29 @@ def load(session_id, test_ratio=0.05, num_points=6000, binsize=0.1, normalise=Tr
     all_ft_new = []
     offset = first_non_stationary_ind * binsize#  + binsize/2
     for i in range(len(all_ft)):
+        for j in range(len(all_ft[i])):
+            if len(all_ft[i][j]) > 0:
+                max_length = max(max_length, len(all_ft[i][j]))
+
+    for i in range(len(all_ft)):
         all_ft_new.append([])
         for j in range(len(all_ft[i])):
             if len(all_ft[i][j]) == 0:
-                all_ft_new[i].append(all_ft[i][j])
+                # For empty arrays, create a zero-filled array of the max length
+                all_ft_new[i].append(np.zeros(max_length))
             else:
-                all_ft_new[i].append(tuple((np.array(all_ft[i][j])-offset)/max_time))
+                # For non-empty arrays, process as before and pad if necessary
+                processed = (np.array(all_ft[i][j]) - offset) / max_time
+                padded = np.pad(processed, (0, max_length - len(processed)), 'constant')
+                all_ft_new[i].append(padded)
+
+    #for i in range(len(all_ft)):
+        #all_ft_new.append([])
+        #for j in range(len(all_ft[i])):
+            #if len(all_ft[i][j]) == 0:
+                #all_ft_new[i].append(all_ft[i][j])
+            #else:
+                #all_ft_new[i].append(tuple((np.array(all_ft[i][j])-offset)/max_time))
     all_ft = np.array(all_ft_new)
     train_df = pd.DataFrame(all_sc, index=x)
     test_df = pd.DataFrame(all_sc[test_inds], index=x[test_inds])

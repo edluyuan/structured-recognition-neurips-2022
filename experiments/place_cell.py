@@ -18,7 +18,13 @@ from gpvae.models.models import VAE, GPVAE, SGPVAE, SR_nlGPFA
 import gpvae.utils.evaluation as evaluation
 
 torch.set_default_dtype(torch.float64)
-DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+DEVICE = (
+    torch.device('cuda')
+    if torch.cuda.is_available()
+    #else torch.device('mps')
+    #if torch.backends.mps.is_available()
+    else torch.device('cpu')
+)
 
 def main(args):
     _, train, test, _ = load(args.session_id, num_points=args.num_points, binsize=args.data_binsize)

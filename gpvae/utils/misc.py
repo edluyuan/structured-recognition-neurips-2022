@@ -4,9 +4,9 @@ import os
 
 def save(args, metrics, model=None, seed=None):
     if 'results_dir' in args.keys():
-        results_dir = args['results_dir'] + f"{args['session_id']}/" + f"LD{args['latent_dim']}_ND{args['num_inducing']}_AG{args['affine_grad']}" + (f"_HD{args['gpfa_h_dim']}/" if args['model']=='aea-sgpvae' else '/') + f"{args['model']}"
+        results_dir = args['results_dir'] + f"{args['session_id']}/" + f"LD{args['latent_dim']}_ND{args['num_inducing']}" + (f"_HD{args['gpfa_h_dim']}/" if args['model']=='aea-sgpvae' else '/') + f"{args['model']}"
     else:
-        results_dir = '_results/' + f"{args['session_id']}/" + f"LD{args['latent_dim']}_ND{args['num_inducing']}_AG{args['affine_grad']}" + (f"_HD{args['gpfa_h_dim']}/" if args['model']=='aea-sgpvae' else '/') + f"{args['model']}"
+        results_dir = '_results/' + f"{args['session_id']}/" + f"LD{args['latent_dim']}_ND{args['num_inducing']}" + (f"_HD{args['gpfa_h_dim']}/" if args['model']=='aea-sgpvae' else '/') + f"{args['model']}"
 
     if seed is None:
         if os.path.isdir(results_dir):

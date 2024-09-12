@@ -84,9 +84,13 @@ class GPVAE(VAE):
     def pf(self, x, diag=False):
         batch_size = x.shape[0]
         mu = torch.zeros((self.latent_dim, batch_size), device=self.device)
-        cov = self.kernels.forward(x, x, diag=diag) + self.add_jitter * JITTER * torch.eye(batch_size, device=self.device).unsqueeze(0) 
+        cov = self.kernels.forward(x, x, diag=diag) + self.add_jitter * JITTER * torch.eye(batch_size, device=self.device).unsqueeze(0)
+        regularization = 1e-6 * torch.eye(cov.shape[-1]).to(cov.device)
+        cov_regularized = cov + regularization
         # add jittering might break when self.latent_dim == 1
-        cov_chol = torch.cholesky(cov)
+        cov_chol = torch.linalg.cholesky(cov_regularized)
+        #cov_chol = torch.linalg.cholesky(cov)
+        #cov_chol = torch.cholesky(cov)
         
         pf = MultivariateNormal(loc=mu, scale_tril=cov_chol)
         return pf
