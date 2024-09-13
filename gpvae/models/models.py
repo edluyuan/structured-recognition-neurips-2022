@@ -365,7 +365,7 @@ class SR_nlGPFA(GPVAE):
         b_chol = torch.linalg.cholesky(b)
         
         c = torch.sum((F_mat.transpose(-1, -2)).matmul(C_mat.transpose(-1, -2)).matmul(rh_precision).matmul((rh_mu-d_vec).unsqueeze(-1)), dim=0)
-        
+
         d = torch.linalg.solve_triangular(b_chol, pu_chol_M, upper=False)
         qu_cov = d.transpose(-1, -2).matmul(d) + self.add_jitter * JITTER * torch.eye(self.latent_dim * self.num_inducing, device=self.device)
         qu_mu = torch.matmul(qu_cov.clone(), c).squeeze(-1)
@@ -378,10 +378,10 @@ class SR_nlGPFA(GPVAE):
         K_n = torch.diagonal(pf_cov, dim1=-2, dim2=-1).transpose(-1, -2).diag_embed()
         qf_cov = K_n + F_mat.matmul(qu_cov - pu_cov).matmul(F_mat.transpose(-1, -2))
         qf = MultivariateNormal(qf_mu, qf_cov)
-        
+
         qh_mu = C_mat.matmul(F_mat).matmul(qu_mu) + d_vec
         qh_cov = C_mat.matmul(qf_cov).matmul(C_mat.transpose(-1, -2)) + self.add_jitter * JITTER * \
-            torch.eye(self.h_dim, device=self.device).unsqueeze(0).repeat((batch_size, 1, 1))
+                 torch.eye(self.h_dim, device=self.device).unsqueeze(0).repeat((batch_size, 1, 1))
         qh = MultivariateNormal(qh_mu, qh_cov)
         
         qs = None
@@ -467,3 +467,137 @@ class SR_nlGPFA(GPVAE):
         y_sigmas = torch.stack(y_samples).std(dim=0)
         
         return y_mus, y_sigmas, y_samples
+
+
+class SR_nlHGPFA(SR_nlGPFA):
+    def __init__(self, recog_model, gen_model, latent_dim, kernel, z, add_jitter=True, fixed_inducing=False,
+                 h_dim=20, affine_weight=None, affine_bias=None, device=None, orthogonal_reg=0.0,
+                 K=10, init_lf=0.1, max_lf=0.5, temp_method='none', init_alpha=0.5, init_T_0=2.0):
+        super().__init__(recog_model, gen_model, latent_dim, kernel, z, add_jitter, fixed_inducing,
+                         h_dim, affine_weight, affine_bias, device, orthogonal_reg)
+        self.K = K
+        self.init_lf = init_lf
+        self.max_lf = max_lf
+        self.temp_method = temp_method
+        self.init_alpha = init_alpha
+        self.init_T_0 = init_T_0
+        self._init_hmc_params()
+
+    def _init_hmc_params(self):
+        # Initialize leapfrog step size parameters
+        init_lf_reparam = np.log(self.init_lf / (self.max_lf - self.init_lf))
+        self.lf_reparam = nn.Parameter(torch.tensor(init_lf_reparam, dtype=torch.float64, device=self.device))
+
+        # Initialize temperature parameters
+        if self.temp_method == 'free':
+            init_alpha = self.init_alpha  # Should be between 0 and 1
+            init_alpha_reparam = np.log(init_alpha / (1 - init_alpha))
+            self.alphas_reparam = nn.Parameter(
+                torch.tensor(init_alpha_reparam, dtype=torch.float64, device=self.device))
+        elif self.temp_method == 'fixed':
+            init_T_0 = self.init_T_0  # Should be greater than 1.0
+            init_T_0_reparam = np.log(init_T_0 - 1)
+            self.T_0_reparam = nn.Parameter(torch.tensor(init_T_0_reparam, dtype=torch.float64, device=self.device))
+        else:
+            # Use different names to avoid conflict
+            self.register_buffer('_T_0', torch.tensor(1., dtype=torch.float64, device=self.device))
+            self.register_buffer('_alphas', torch.ones(self.K, dtype=torch.float64, device=self.device))
+
+    def free_energy(self, x, y, num_samples=1):
+        batch_size = y.shape[0]
+        pu = self.pf(self.z)
+        pu_flatten = self.flatten_pu(pu)
+        rh = self.recog_factor(y)
+        qh, qu, _, _ = self.qf(x, pu=pu, rh=rh)
+
+        # KL divergence between q(u) and p(u)
+        kl = kl_divergence(qu, pu_flatten).sum()
+
+        # Sample initial h and p
+        q_mu = qh.mean  # [batch_size, h_dim]
+        q_sigma = qh.stddev  # [batch_size, h_dim]
+
+        h_0 = q_mu + q_sigma * torch.randn_like(q_mu)
+        p_0 = torch.sqrt(self.T_0) * torch.randn_like(h_0)
+
+        # Perform Hamiltonian dynamics to get h_K and p_K
+        h_K, p_K = self._his(h_0, p_0, y)
+
+        # Compute expected log-likelihood
+        expected_log_likelihood = self.gen_model.log_likelihood(h_K, y).sum(dim=1)  # [batch_size]
+
+        # Compute negative KL term
+        log_prob_hK = -0.5 * (h_K ** 2).sum(dim=1)  # Prior over h_K
+        log_prob_pK = -0.5 * (p_K ** 2).sum(dim=1)
+        sum_log_sigma = q_sigma.log().sum(dim=1)
+
+        log_prob_h0 = -0.5 * (((h_0 - q_mu) / q_sigma) ** 2).sum(dim=1)
+        log_prob_p0 = -0.5 / self.T_0 * (p_0 ** 2).sum(dim=1)
+
+        neg_kl_term = log_prob_hK + log_prob_pK + sum_log_sigma - log_prob_h0 - log_prob_p0
+
+        # ELBO
+        elbo = (expected_log_likelihood + neg_kl_term).mean() - kl / batch_size
+
+        # Orthogonal regularization
+        if self.orthogonal_reg:
+            ortho_reg_term = torch.sum(
+                (self.affine_weight.T @ self.affine_weight - torch.eye(self.h_dim, device=self.device)) ** 2
+            )
+            elbo -= self.orthogonal_reg * ortho_reg_term
+
+        return elbo
+
+    def _his(self, h_0, p_0, y):
+        h = h_0
+        p = p_0
+
+        lf_eps = self.lf_eps  # Leapfrog step size
+        alphas = self.alphas  # Momentum scaling factors
+
+        for k in range(self.K):
+            # Half step for momentum
+            p_half = p - 0.5 * lf_eps * self._dU_dh(h, y)
+            # Full step for position
+            h = h + lf_eps * p_half
+            # Another half step for momentum
+            p_temp = p_half - 0.5 * lf_eps * self._dU_dh(h, y)
+            # Momentum scaling
+            p = alphas * p_temp
+
+        return h, p
+
+    def _dU_dh(self, h, y):
+        h = h.detach().requires_grad_(True)
+        # Compute potential energy U(h) = -log p(y|h) + 0.5 * ||h||^2
+        log_py_h = self.gen_model.log_likelihood(h, y).sum(dim=1)  # [batch_size]
+        U = -log_py_h + 0.5 * (h ** 2).sum(dim=1)  # [batch_size]
+        grad_U = torch.autograd.grad(U.sum(), h)[0]  # [batch_size, h_dim]
+        return grad_U
+
+    @property
+    def lf_eps(self):
+        return torch.sigmoid(self.lf_reparam) * self.max_lf
+
+    @property
+    def alphas(self):
+        if self.temp_method == 'free':
+            return torch.sigmoid(self.alphas_reparam)
+        elif self.temp_method == 'fixed':
+            T_0 = 1 + torch.exp(self.T_0_reparam)
+            k_vec = torch.arange(1, self.K + 1, dtype=torch.float64, device=self.device)
+            k_m_1_vec = torch.arange(0, self.K, dtype=torch.float64, device=self.device)
+            temp_sched = (1 - T_0) * k_vec ** 2 / self.K ** 2 + T_0
+            temp_sched_m_1 = (1 - T_0) * k_m_1_vec ** 2 / self.K ** 2 + T_0
+            return torch.sqrt(temp_sched / temp_sched_m_1)
+        else:
+            return self._alphas  # Return the buffer value
+
+    @property
+    def T_0(self):
+        if self.temp_method == 'free':
+            return torch.prod(self.alphas) ** (-2)
+        elif self.temp_method == 'fixed':
+            return 1 + torch.exp(self.T_0_reparam)
+        else:
+            return self._T_0  # Return the buffer value
